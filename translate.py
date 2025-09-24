@@ -1,100 +1,138 @@
-# ---------------------------------------------------------------
-#  Batch locale translation: id + context + source + target
-# ---------------------------------------------------------------
-
+import json
+import os
 from typing import List
 
 from litellm import completion
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-# ------------------------------------------------------------------
-# 1️⃣  Pydantic model – represents one locale entry
-# ------------------------------------------------------------------
+os.environ["LM_STUDIO_API_BASE"] = "http://localhost:1234/v1"
 
 
 class LocaleEntry(BaseModel):
-    id: str = Field(..., description="Unique key used in your code")
-    context: str = Field(
-        ...,
-        description=(
-            "Short note that explains the purpose of this string "
-            "(helps the LLM choose the right translation)"
+    id: str
+    context: str
+    source: str
+    target: str
+
+
+class LocaleEntries(BaseModel):
+    batch: List[LocaleEntry]
+
+
+entries_to_translate = LocaleEntries(
+    batch=[
+        LocaleEntry(
+            id="title",
+            context="Title of the confirm action title",
+            source="Confirm",
+            target="",
         ),
-    )
-    en_US: str = Field(..., alias="en-US", description="English source")
-    es_MX: str = Field("", alias="es-MX", description="Mexican Spanish target")
-
-    class Config:
-        # Allow the model to read/write using the aliases (`en-US`, `es-MX`)
-        allow_population_by_field_name = True
-        # When dumping to JSON, keep the aliases (so output matches the prompt)
-        use_enum_values = True
-
-
-# ------------------------------------------------------------------
-# 2️⃣  Build a batch of entries (the ones you want translated)
-# ------------------------------------------------------------------
-
-entries_to_translate: List[LocaleEntry] = [
-    LocaleEntry(
-        id="title", context="Title of the confirm action title", en_US="Confirm"
-    ),
-    LocaleEntry(
-        id="cancel",
-        context="Label on the cancel button in a modal dialog",
-        en_US="Cancel",
-    ),
-    LocaleEntry(
-        id="welcome_msg",
-        context="Greeting shown on the home page",
-        en_US="Welcome to our site!",
-    ),
-    LocaleEntry(
-        id="error_404",
-        context="Message shown when a page is not found",
-        en_US="Page not found.",
-    ),
-]
-
-# ------------------------------------------------------------------
-# 3️⃣  Build the prompt
-# ------------------------------------------------------------------
-
-prompt = (
-    "You are a professional translator. Translate the following English strings "
-    "(en-US) into Mexican Spanish (es-MX). Return **exactly** a JSON array that "
-    "matches the following schema:\n\n"
+        LocaleEntry(
+            id="cancel",
+            context="Label on the cancel button in a modal dialog",
+            source="Cancel",
+            target="",
+        ),
+        LocaleEntry(
+            id="welcome_msg",
+            context="Greeting shown on the home page",
+            source="Welcome to our site!",
+            target="",
+        ),
+        LocaleEntry(
+            id="error_404",
+            context="Message shown when a page is not found",
+            source="Page not found.",
+            target="",
+        ),
+        LocaleEntry(
+            id="app.title",
+            context="",
+            source="My Application",
+            target="",
+        ),
+        LocaleEntry(
+            id="app.subtitle",
+            context="",
+            source="The best way to manage your tasks",
+            target="",
+        ),
+        LocaleEntry(
+            id="app.version",
+            context="",
+            source="Version 1.0.0",
+            target="",
+        ),
+        LocaleEntry(
+            id="app.build_date",
+            context="",
+            source="Build date: 2025-09-21",
+            target="",
+        ),
+        LocaleEntry(
+            id="greeting",
+            context="Template for the user's name in English as 'first_name, last_name'",
+            source="%1$s, %2$s",
+            target="",
+        ),
+        LocaleEntry(
+            id="share-email-button",
+            context="Button user clicks to share a file through email. Make it similar in length to the enlish version.",
+            source="Share by Email",
+            target="",
+        ),
+    ]
 )
 
-# Show the target schema so the model knows what to output
-prompt += f"{LocaleEntry.schema_json(indent=2)}\n\n"
 
-# Show the list of entries – note that we keep the `es-MX` field empty
-prompt += "Entries to translate:\n"
-for entry in entries_to_translate:
-    # Convert each entry to a dict using the alias names
-    d = entry.dict(by_alias=True)
-    prompt += f"- {d}\n"
+class Translator:
 
-# ------------------------------------------------------------------
-# 4️⃣  Call the LLM via Litellm
-# ------------------------------------------------------------------
+    def __init__(self, model="lm_studio/microsoft/phi-4", prompt=""):
+        self.model = model
+        self.prompt = prompt
+        self.prompt += (
+            "Return **exactly** a JSON array that matches the following schema:\n\n"
+        )
+        self.prompt += f"{json.dumps(LocaleEntries.model_json_schema(), indent=2)}\n\n"
 
-response = completion(
-    model="lm_studio/llama-3-8b-instruct",  # choose your own model
-    messages=[{"role": "user", "content": prompt}],
-    response_format=List[LocaleEntry],  # Litellm will parse into this list
+    def translate(self, entries: LocaleEntries):
+        prompt = self.prompt
+        prompt += "Entries to translate:\n"
+        for entry in entries.batch:
+            d = entry.model_dump_json(by_alias=True)
+            prompt += f"- {d}\n"
+
+        try:
+            response = completion(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format=LocaleEntries,
+            )
+
+            response_content = response.choices[0].message.content
+            translated_entries_dict = json.loads(response_content)
+            translated_entries = LocaleEntries(**translated_entries_dict)
+
+            print("✅ Translation batch completed!\n")
+            print(translated_entries)
+            print("\n\n")
+            for entry in translated_entries.batch:
+                print(f"{entry.id}: {entry.source}, {entry.target}")
+                print("\n")
+
+        except Exception as e:
+            print(f"Error during translation: {e}")
+
+
+english_to_japanese = (
+    "You are a professional translator. Translate the following source (en-US) strings into culturaly appropriate target (ja-JP) strings."
+    "Names in Japanese are last-name, first-name."
 )
 
-# ------------------------------------------------------------------
-# 5️⃣  Parsed result – a list of LocaleEntry objects with es-MX filled
-# ------------------------------------------------------------------
+english_to_spanish: str = (
+    "You are a professional translator. Translate the following source (en-US) strings into culturaly appropriate target (es-US) strings."
+)
 
-translated_entries: List[LocaleEntry] = response.choices[0].message.content
 
-print("✅ Translation batch completed!\n")
-for e in translated_entries:
-    print(f"id      : {e.id}")
-    print(f"context : {e.context}")
-    print(f"en-US   : {e.en_US}")
-    print(f"es-MX   : {e.es_MX}\n---")
+translator = Translator("lm_studio/microsoft/phi-4", english_to_spanish)
+translator.translate(entries_to_translate)
